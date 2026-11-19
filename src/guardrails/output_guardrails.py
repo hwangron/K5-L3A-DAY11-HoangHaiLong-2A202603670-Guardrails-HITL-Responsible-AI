@@ -12,7 +12,36 @@ from google.adk.agents import llm_agent
 from google.adk import runners
 from google.adk.plugins import base_plugin
 
+from core.config import DEMO_SECRETS
 from core.utils import chat_with_agent
+
+
+# Giá trị secret DEMO lấy từ data/protected/vinbank_secrets.json (admin123,
+# sk-vinbank-secret-2024, db.vinbank.internal, ...). Che nguyên văn kể cả khi
+# model không viết kèm chữ "password".
+_SECRET_VALUES_PATTERN = (
+    "|".join(re.escape(s) for s in sorted(DEMO_SECRETS, key=len, reverse=True))
+    or r"(?!x)x"  # không có secret → pattern không bao giờ khớp
+)
+
+# Thứ tự quan trọng: che secret/API key trước, PII số sau, để regex số không
+# "cắt" vào giữa một API key.
+PII_PATTERNS = {
+    # Secret nguyên văn trong file protected
+    "secret_value": _SECRET_VALUES_PATTERN,
+    # API key dạng sk-xxxx
+    "api_key": r"\bsk-[A-Za-z0-9_-]{6,}",
+    # "password is X", "password=X", "mật khẩu: X"
+    "password": r"\b(password|passwd|pwd|pass ?code|mật khẩu|mat khau)\s*(is|là|la|:|=)\s*\S+",
+    # Host nội bộ: db.vinbank.internal:5432
+    "internal_host": r"\b[\w.-]+\.(internal|local|corp)(:\d{2,5})?\b",
+    # Email
+    "email": r"[\w.+-]+@[\w-]+(\.[\w-]+)*\.[a-zA-Z]{2,}",
+    # SĐT VN: 0xxxxxxxxx (10–11 số) hoặc +84...; không khớp hotline "1900 545 467"
+    "phone": r"(?<!\d)(\+84|0)\d{9,10}(?!\d)",
+    # CMND (9 số) / CCCD (12 số)
+    "national_id": r"(?<!\d)(\d{9}|\d{12})(?!\d)",
+}
 
 
 # ============================================================
@@ -37,20 +66,12 @@ def content_filter(response: str) -> dict:
         dict with 'safe', 'issues', and 'redacted' keys
     """
     issues = []
-    redacted = response
+    redacted = response or ""
 
-    # PII patterns to check
-    PII_PATTERNS = {
-        # TODO: Add regex patterns for:
-        # - VN phone number: r"0\d{9,10}"
-        # - Email: r"[\w.-]+@[\w.-]+\.[a-zA-Z]{2,}"
-        # - National ID (CMND/CCCD): r"\b\d{9}\b|\b\d{12}\b"
-        # - API key pattern: r"sk-[a-zA-Z0-9-]+"
-        # - Password pattern: r"password\s*[:=]\s*\S+"
-    }
-
+    # PII_PATTERNS định nghĩa ở đầu file. Đếm match trên bản GỐC (để báo đủ loại
+    # vấn đề: sk-... vừa là secret_value vừa là api_key), còn che thì làm lần lượt.
     for name, pattern in PII_PATTERNS.items():
-        matches = re.findall(pattern, response, re.IGNORECASE)
+        matches = list(re.finditer(pattern, response or "", re.IGNORECASE))
         if matches:
             issues.append(f"{name}: {len(matches)} found")
             redacted = re.sub(pattern, "[REDACTED]", redacted, flags=re.IGNORECASE)
@@ -172,16 +193,31 @@ class OutputGuardrailPlugin(base_plugin.BasePlugin):
         if not response_text:
             return llm_response
 
-        # TODO: Implement logic:
-        # 1. Call content_filter(response_text)
-        #    - If issues found: replace llm_response.content with redacted version
-        #    - Increment self.redacted_count
-        # 2. If use_llm_judge: call llm_safety_check(response_text)
-        #    - If unsafe: replace llm_response.content with a safe message
-        #    - Increment self.blocked_count
-        # 3. Return llm_response (possibly modified)
+        # 1. Regex filter: có secret/PII → thay bằng bản [REDACTED]
+        result = content_filter(response_text)
+        if not result["safe"]:
+            self.redacted_count += 1
+            llm_response.content = types.Content(
+                role="model",
+                parts=[types.Part.from_text(text=result["redacted"])],
+            )
+            response_text = result["redacted"]
 
-        return llm_response  # TODO: modify if needed
+        # 2. (Optional) LLM-as-Judge — mặc định tắt vì safety_judge_agent = None
+        if self.use_llm_judge:
+            verdict = await llm_safety_check(response_text)
+            if not verdict["safe"]:
+                self.blocked_count += 1
+                llm_response.content = types.Content(
+                    role="model",
+                    parts=[types.Part.from_text(
+                        text="[BLOCKED: output_guardrail/judge] Câu trả lời bị giữ lại "
+                             "vì không đạt kiểm tra an toàn."
+                    )],
+                )
+
+        # 3. Trả về response (đã sửa nếu cần)
+        return llm_response
 
 
 # ============================================================

@@ -41,17 +41,51 @@ class MonitoringAlert:
     judge_checks: int = 0
     judge_fails: int = 0
 
+    def record(self, *, blocked: bool, layer: str | None = None) -> None:
+        """Cập nhật bộ đếm sau mỗi request (pipeline gọi hàm này)."""
+        self.total_requests += 1
+        if blocked:
+            self.blocked_requests += 1
+        if layer == "rate_limiter":
+            self.rate_limit_hits += 1
+
     def check_metrics(self) -> list[Alert]:
-        """TODO: compute rates, append Alert objects when thresholds exceeded."""
-        raise NotImplementedError("Implement MonitoringAlert.check_metrics")
+        """Tính tỉ lệ; vượt ngưỡng → tạo Alert (mỗi metric 1 alert, không trùng)."""
+        snap = self.snapshot()
+        candidates = [
+            ("block_rate", snap["block_rate"], self.block_rate_threshold,
+             snap["block_rate"] > self.block_rate_threshold,
+             "Block rate cao — có thể đang bị tấn công hoặc guardrail chặn nhầm."),
+            ("rate_limit_hits", self.rate_limit_hits, self.rate_limit_hit_threshold,
+             self.rate_limit_hits >= self.rate_limit_hit_threshold,
+             "Nhiều request bị rate limit — nghi ngờ spam / cost attack."),
+            ("judge_fail_rate", snap["judge_fail_rate"], self.judge_fail_rate_threshold,
+             self.judge_checks > 0 and snap["judge_fail_rate"] > self.judge_fail_rate_threshold,
+             "LLM judge đánh fail nhiều câu trả lời."),
+        ]
+        existing = {a.metric for a in self.alerts}
+        new_alerts = []
+        for metric, value, threshold, fired, message in candidates:
+            if fired and metric not in existing:
+                alert = Alert(metric=metric, value=float(value),
+                              threshold=float(threshold), message=message)
+                self.alerts.append(alert)
+                new_alerts.append(alert)
+                print(f"  [ALERT] {metric}={value:.2f} (threshold {threshold}) — {message}")
+        return new_alerts
 
     def export_json(self, filepath: str | None = None):
-        """TODO: write metrics + alerts to JSON under repo-root ``outputs/`` by default.
-        Use ``filepath or default_metrics_path()`` so running from ``src/`` does not
-        create ``src/outputs/``.
-        """
-        _ = filepath or default_metrics_path()
-        raise NotImplementedError("Implement MonitoringAlert.export_json")
+        """Ghi metrics + alerts ra <repo>/outputs/metrics.json (mặc định)."""
+        path = Path(filepath or default_metrics_path())
+        path.parent.mkdir(parents=True, exist_ok=True)
+        data = self.snapshot()
+        data["thresholds"] = {
+            "block_rate": self.block_rate_threshold,
+            "rate_limit_hits": self.rate_limit_hit_threshold,
+            "judge_fail_rate": self.judge_fail_rate_threshold,
+        }
+        path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+        return str(path)
 
     def snapshot(self) -> dict:
         block_rate = (

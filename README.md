@@ -1,5 +1,22 @@
 # Day 11 — Controlled Agent Security (2026)
 
+> **Học viên:** Hoàng Hải Long · **MSSV:** 2A202603670 · **Lớp:** K5-L3A
+>
+> **Cấu hình chạy bài:**
+> - Blue = Liquid AI `lfm3-1.7b` (cùng model lab, khác nhà cung cấp — đã được giảng viên xác nhận).
+> - Red / Red Advance = Gemini `gemini-3.5-flash`.
+> - Môi trường = Docker `python:3.12-slim`, vì `nemoguardrails` chưa hỗ trợ Python 3.14.
+>
+> ```powershell
+> docker build -t lab11 .
+> # Mount cả repo: sửa code không cần build lại; outputs/ ghi thẳng ra máy; .env đọc qua python-dotenv
+> docker run --rm -v "${PWD}:/app" lab11 python src/main.py --part 3
+> docker run --rm -v "${PWD}:/app" lab11 python src/main.py --part 4
+> docker run --rm -v "${PWD}:/app" lab11 pytest tests/public -q
+> docker run --rm -v "${PWD}:/app" lab11 python scripts/grade.py --submission-dir . --out outputs/grade_report.json
+> ```
+> Không dùng Docker cũng chạy được bình thường với Python 3.11/3.12 + `pip install -r requirements.txt`.
+
 > 👤 **Hình thức:** bài tập **cá nhân** (1 người / 1 MSSV).  
 > 🎯 **Mục tiêu:** đóng vai **Blue Team** để học cách xây Guardrails phòng thủ, rồi đóng vai **Red Team** để tấn công agent **Red** hoặc **Red Advance**.  
 > ✅ Làm theo **Checkpoint 1 → 5** trong [`CHECKPOINTS.md`](CHECKPOINTS.md) · nộp theo [`SUBMISSION.md`](SUBMISSION.md).
